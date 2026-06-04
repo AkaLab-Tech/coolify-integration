@@ -17,30 +17,25 @@ It is independent of atelier; install it only if you deploy with Coolify.
 
 ## Setup
 
-1. In Coolify, create an API token (Settings → API / Keys & Tokens) with the
-   `read`, `deploy`, and `write` scopes. Avoid `root` unless you need it.
+In Coolify, create an API token (Settings → API / Keys & Tokens) with the
+`read`, `deploy`, and `write` scopes (avoid `root` unless you need it). Then
+configure the plugin in one of two ways.
 
-2. Store the token in the macOS Keychain:
+**With atelier** — pick it during `install.sh`, or run any time:
 
-   ```sh
-   security add-generic-password -s coolify-api -a "$USER" -w '<COOLIFY_API_TOKEN>'
-   ```
+```
+/atelier:setup-coolify
+```
 
-3. Export your instance URL (e.g. in `~/.zshrc`):
+**Standalone** — run the configure command, which links the `atelier-coolify`
+CLI onto your `PATH`, grants the [allowlist](#how-permissions-work), and prompts
+for the token (stored in the macOS Keychain) and base URL:
 
-   ```sh
-   export COOLIFY_BASE_URL="https://coolify.example.com"
-   ```
-
-4. Run the setup command in a Claude Code session:
-
-   ```
-   /coolify-integration:setup
-   ```
-
-   It links the `atelier-coolify` CLI onto your `PATH` and grants atelier
-   agents the routine Coolify allowlist (see [How permissions work](#how-permissions-work)).
-   It also tells you if the token or `COOLIFY_BASE_URL` is still missing.
+```sh
+atelier-coolify configure
+# or, inside a Claude Code session:
+/coolify-integration:setup
+```
 
 The script also accepts `COOLIFY_API_TOKEN` directly (overriding the Keychain
 lookup) for non-macOS or CI use.
