@@ -1,33 +1,31 @@
 ---
-description: Set up coolify-integration — link the CLI onto PATH, grant atelier agents the Coolify allowlist (user-level), and capture the token + base URL
-allowed-tools: Bash(security add-generic-password:*), Bash(security find-generic-password:*), Bash(${CLAUDE_PLUGIN_ROOT}/scripts/atelier-coolify:*)
+description: Set up coolify-integration — link the CLI onto PATH, grant atelier agents the Coolify allowlist (user-level), and wire this project's .env to a Coolify instance
+allowed-tools: Bash(${CLAUDE_PLUGIN_ROOT}/scripts/atelier-coolify:*), Read(.env), Edit(.env), Write(.env)
 ---
 
-Set up the coolify-integration plugin on this machine, then report a short
-summary. Do every step in order:
+Set up the coolify-integration plugin, then report a short summary. Do every
+step in order:
 
-1. Run the non-interactive part of setup (PATH symlink + user-level allowlist
+1. Run the machine-wide part of setup (PATH symlink + user-level allowlist
    merge — never atelier's per-task template):
 
    ```sh
    "${CLAUDE_PLUGIN_ROOT}/scripts/atelier-coolify" configure --non-interactive
    ```
 
-2. **API token.** Check whether one already exists:
-   `security find-generic-password -s coolify-api -a "$USER" -w >/dev/null 2>&1`.
-   - If it exists, keep it.
-   - If not, ask the operator (in chat) for their Coolify API token, then store
-     it: `security add-generic-password -U -s coolify-api -a "$USER" -w '<token>'`.
-     Never echo the token back.
+2. **Per-project auth.** Coolify auth is per project so one operator can deploy
+   different projects to different instances. If the current directory is a
+   project, wire its `.env`:
+   - Read `.env` (create it if missing). If `COOLIFY_BASE_URL` is absent, ask
+     the operator for the project's Coolify instance URL (e.g.
+     `https://coolify.example.com`) and add `COOLIFY_BASE_URL=<url>`.
+   - If `COOLIFY_API_TOKEN` is absent, ask for the project's Coolify API token
+     and add `COOLIFY_API_TOKEN=<token>`. Never echo the token back.
+   - `.env` stays gitignored by atelier's `.env*` guardrail — never `git add` it.
 
-3. **Base URL.** If `$COOLIFY_BASE_URL` is unset, ask the operator for their
-   Coolify instance URL (e.g. `https://coolify.example.com`) and append
-   `export COOLIFY_BASE_URL="<url>"` to their `~/.zshrc` (only if not already
-   present). Remind them to open a new shell to load it.
+3. Verify the connection if both are set: `atelier-coolify version`.
 
-4. Verify the connection if both are now set:
-   `atelier-coolify version` (or `${CLAUDE_PLUGIN_ROOT}/scripts/atelier-coolify version`).
-
-Report: PATH link status, permissions merged, token present (yes/no — never the
-value), base URL, and the connection check result. To undo later, run
+Report: PATH link status, permissions merged, whether `.env` now has
+`COOLIFY_BASE_URL` + `COOLIFY_API_TOKEN` (token presence only, never the value),
+and the connection check result. To undo the machine-wide part later, run
 `atelier-coolify disable-permissions` and remove the symlink.

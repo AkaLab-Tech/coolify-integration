@@ -18,8 +18,12 @@ It is independent of atelier; install it only if you deploy with Coolify.
 ## Setup
 
 In Coolify, create an API token (Settings → API / Keys & Tokens) with the
-`read`, `deploy`, and `write` scopes (avoid `root` unless you need it). Then
-configure the plugin in one of two ways.
+`read`, `deploy`, and `write` scopes (avoid `root` unless you need it).
+
+Setup has two parts: a **machine-wide** part (link the CLI onto `PATH`, grant
+the [allowlist](#how-permissions-work)) and a **per-project** part (the token +
+URL). Auth is per project so one operator can deploy different projects to
+different Coolify instances.
 
 **With atelier** — pick it during `install.sh`, or run any time:
 
@@ -27,9 +31,8 @@ configure the plugin in one of two ways.
 /atelier:setup-coolify
 ```
 
-**Standalone** — run the configure command, which links the `atelier-coolify`
-CLI onto your `PATH`, grants the [allowlist](#how-permissions-work), and prompts
-for the token (stored in the macOS Keychain) and base URL:
+**Standalone** — `configure` does the machine-wide part, then (run from inside a
+project) wires that project's `.env`:
 
 ```sh
 atelier-coolify configure
@@ -37,8 +40,18 @@ atelier-coolify configure
 /coolify-integration:setup
 ```
 
-The script also accepts `COOLIFY_API_TOKEN` directly (overriding the Keychain
-lookup) for non-macOS or CI use.
+### Per-project auth
+
+Each project carries its own credentials in its `.env` (kept gitignored by
+atelier's `.env*` guardrail):
+
+```sh
+COOLIFY_BASE_URL=https://coolify.example.com
+COOLIFY_API_TOKEN=<token>
+```
+
+`atelier-coolify` reads these from the project's `.env` (or `$COOLIFY_ENV_FILE`,
+or the environment) at call time.
 
 ## Usage
 
