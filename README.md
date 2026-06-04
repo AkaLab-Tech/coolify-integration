@@ -32,15 +32,15 @@ It is independent of atelier; install it only if you deploy with Coolify.
    export COOLIFY_BASE_URL="https://coolify.example.com"
    ```
 
-4. Put the CLI on your `PATH` (one-time symlink — this plugin ships no
-   installer):
+4. Run the setup command in a Claude Code session:
 
-   ```sh
-   ln -sf "$HOME/.claude/plugins/coolify-integration/scripts/atelier-coolify" \
-     "$HOME/.local/bin/atelier-coolify"
+   ```
+   /coolify-integration:setup
    ```
 
-   Adjust the source path to wherever Claude Code installed the plugin.
+   It links the `atelier-coolify` CLI onto your `PATH` and grants atelier
+   agents the routine Coolify allowlist (see [How permissions work](#how-permissions-work)).
+   It also tells you if the token or `COOLIFY_BASE_URL` is still missing.
 
 The script also accepts `COOLIFY_API_TOKEN` directly (overriding the Keychain
 lookup) for non-macOS or CI use.
@@ -56,11 +56,13 @@ atelier-coolify set-env <uuid> API_URL=https://api.example.com
 atelier-coolify deploy <uuid>                # apply the change
 ```
 
-## Allowlisting in atelier
+## How permissions work
 
-Add the read/write commands to atelier's `templates/settings.template.json`
-(`permissions.allow`). The gated commands are deliberately omitted so they fall
-back to operator confirmation:
+This plugin stays fully decoupled from atelier — it never edits atelier's
+shipped `settings.template.json`. Instead, `/coolify-integration:setup` (or
+`atelier-coolify enable-permissions`) merges the routine allowlist into your
+**user-level** `settings.json` (`$ATELIER_CONFIG_DIR/settings.json`), which
+persists across tasks and applies on top of atelier's per-task settings:
 
 ```json
 "Bash(atelier-coolify list:*)",
@@ -70,8 +72,15 @@ back to operator confirmation:
 "Bash(atelier-coolify validate:*)",
 "Bash(atelier-coolify deploy:*)",
 "Bash(atelier-coolify set-env:*)",
+"Bash(atelier-coolify health:*)",
+"Bash(atelier-coolify version:*)",
 "Skill(coolify-integration:*)"
 ```
+
+The merge is idempotent and order-preserving, and touches nothing else in the
+file. The gated commands (`create-app-public`, `delete-app`) are deliberately
+omitted so they fall back to operator confirmation. Undo with
+`atelier-coolify disable-permissions`.
 
 ## API compatibility
 

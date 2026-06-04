@@ -15,6 +15,26 @@ VERSION="0.1.0"
 SCRIPT_NAME="$(basename "${BASH_SOURCE[0]}")"
 KEYCHAIN_SERVICE="${COOLIFY_KEYCHAIN_SERVICE:-coolify-api}"
 
+# atelier user-level settings.json (persists across tasks; never the per-task
+# template). Resolution order mirrors how atelier/Claude Code locate it.
+ATELIER_SETTINGS="${COOLIFY_ATELIER_SETTINGS:-${ATELIER_CONFIG_DIR:-${CLAUDE_CONFIG_DIR:-$HOME/.claude}}/settings.json}"
+
+# Permissions granted to agents for routine Coolify operations. The gated
+# commands (create-app-public, delete-app) are intentionally absent so they
+# fall back to operator confirmation.
+COOLIFY_ALLOW='[
+  "Bash(atelier-coolify list:*)",
+  "Bash(atelier-coolify status:*)",
+  "Bash(atelier-coolify logs:*)",
+  "Bash(atelier-coolify deployments:*)",
+  "Bash(atelier-coolify validate:*)",
+  "Bash(atelier-coolify deploy:*)",
+  "Bash(atelier-coolify set-env:*)",
+  "Bash(atelier-coolify health:*)",
+  "Bash(atelier-coolify version:*)",
+  "Skill(coolify-integration:*)"
+]'
+
 log()  { printf '==> %s\n' "$*"; }
 die()  { printf '!!  ERROR: %s\n' "$*" >&2; exit 1; }
 
@@ -49,10 +69,17 @@ GATED (left out of allowlist — operator confirms)
   create-app-public <project-uuid> <server-uuid> <git-url> [branch]
   delete-app <app-uuid>
 
+SETUP
+  enable-permissions           Merge the read/write allowlist into atelier's
+                               user settings.json (idempotent; never the template)
+  disable-permissions          Remove that allowlist from atelier's user settings
+
 ENVIRONMENT
   COOLIFY_BASE_URL             Required. e.g. https://coolify.example.com
   COOLIFY_API_TOKEN            Optional. Overrides the Keychain lookup.
   COOLIFY_KEYCHAIN_SERVICE     Optional. Keychain service name (default: coolify-api)
+  COOLIFY_ATELIER_SETTINGS     Optional. Path to atelier's user settings.json
+                               (default: \$ATELIER_CONFIG_DIR/settings.json)
 
 EXIT CODES
   0 success   1 error   2 validation failure (unhealthy deployment)
@@ -160,6 +187,35 @@ cmd_delete_app() {
   api DELETE "/applications/${u}" | pp
 }
 
+cmd_enable_permissions() {
+  require jq
+  local file="$ATELIER_SETTINGS" tmp
+  mkdir -p "$(dirname "$file")"
+  [ -f "$file" ] || printf '{}\n' > "$file"
+  jq empty "$file" 2>/dev/null || die "not valid JSON: ${file}"
+  tmp="$(mktemp)"
+  # Append only entries not already present; preserve existing order; touch
+  # nothing else in the file.
+  jq --argjson add "$COOLIFY_ALLOW" '
+    .permissions = (.permissions // {})
+    | .permissions.allow = ((.permissions.allow // []) as $cur
+        | $cur + ($add - $cur))
+  ' "$file" > "$tmp" && mv "$tmp" "$file"
+  log "coolify permissions merged into ${file}"
+}
+
+cmd_disable_permissions() {
+  require jq
+  local file="$ATELIER_SETTINGS" tmp
+  [ -f "$file" ] || { log "nothing to do (${file} does not exist)"; return 0; }
+  jq empty "$file" 2>/dev/null || die "not valid JSON: ${file}"
+  tmp="$(mktemp)"
+  jq --argjson rm "$COOLIFY_ALLOW" '
+    if .permissions.allow then .permissions.allow -= $rm else . end
+  ' "$file" > "$tmp" && mv "$tmp" "$file"
+  log "coolify permissions removed from ${file}"
+}
+
 main() {
   require curl
   local cmd="${1:-}"; shift || true
@@ -173,9 +229,11 @@ main() {
     set-env)           cmd_set_env "$@" ;;
     health)            cmd_health "$@" ;;
     version)           cmd_version "$@" ;;
-    create-app-public) cmd_create_app_public "$@" ;;
-    delete-app)        cmd_delete_app "$@" ;;
-    -h|--help|help|"")  usage ;;
+    create-app-public)   cmd_create_app_public "$@" ;;
+    delete-app)          cmd_delete_app "$@" ;;
+    enable-permissions)  cmd_enable_permissions "$@" ;;
+    disable-permissions) cmd_disable_permissions "$@" ;;
+    -h|--help|help|"")   usage ;;
     *) die "unknown command: ${cmd} (try --help)" ;;
   esac
 }
