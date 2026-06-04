@@ -1,0 +1,183 @@
+#!/usr/bin/env bash
+#
+# atelier-coolify — thin client for the Coolify v1 REST API, for atelier agents.
+#
+# Reads the API token from the macOS Keychain (service: coolify-api, account:
+# $USER) and the instance base URL from $COOLIFY_BASE_URL. Exposes a small,
+# auditable set of subcommands. Destructive operations (create-app-public,
+# delete-app) are intentionally left out of atelier's Bash allowlist so they
+# require operator confirmation.
+#
+set -euo pipefail
+IFS=$'\n\t'
+
+VERSION="0.1.0"
+SCRIPT_NAME="$(basename "${BASH_SOURCE[0]}")"
+KEYCHAIN_SERVICE="${COOLIFY_KEYCHAIN_SERVICE:-coolify-api}"
+
+log()  { printf '==> %s\n' "$*"; }
+die()  { printf '!!  ERROR: %s\n' "$*" >&2; exit 1; }
+
+require() { command -v "$1" >/dev/null 2>&1 || die "missing dependency: $1"; }
+pp()      { if command -v jq >/dev/null 2>&1; then jq .; else cat; fi; }
+
+usage() {
+  cat <<EOF
+${SCRIPT_NAME} ${VERSION}
+
+Thin client for the Coolify v1 API. Reads the API token from the macOS Keychain
+(service: ${KEYCHAIN_SERVICE}, account: \$USER) and the base URL from
+\$COOLIFY_BASE_URL.
+
+USAGE
+  ${SCRIPT_NAME} <command> [args]
+
+READ-ONLY
+  list                         List applications and their UUIDs
+  status <app-uuid>            Show an application's status
+  logs <app-uuid> [lines]      Recent logs (default 100)
+  deployments                  List running deployments
+  validate <app-uuid>          Status + logs if unhealthy (exit 2 on failure)
+  health                       Coolify instance health
+  version                      Coolify instance version
+
+WRITE (in atelier allowlist)
+  deploy <app-uuid> [--force]  Trigger a deployment
+  set-env <app-uuid> KEY=VALUE Upsert one env var (deploy still required to apply)
+
+GATED (left out of allowlist — operator confirms)
+  create-app-public <project-uuid> <server-uuid> <git-url> [branch]
+  delete-app <app-uuid>
+
+ENVIRONMENT
+  COOLIFY_BASE_URL             Required. e.g. https://coolify.example.com
+  COOLIFY_API_TOKEN            Optional. Overrides the Keychain lookup.
+  COOLIFY_KEYCHAIN_SERVICE     Optional. Keychain service name (default: coolify-api)
+
+EXIT CODES
+  0 success   1 error   2 validation failure (unhealthy deployment)
+EOF
+}
+
+resolve_token() {
+  if [ -n "${COOLIFY_API_TOKEN:-}" ]; then
+    printf '%s' "$COOLIFY_API_TOKEN"
+    return 0
+  fi
+  require security
+  security find-generic-password -s "$KEYCHAIN_SERVICE" -a "$USER" -w 2>/dev/null \
+    || die "no Coolify token. Store one with: security add-generic-password -s ${KEYCHAIN_SERVICE} -a \$USER -w <token>"
+}
+
+api() {
+  # api <METHOD> <path> [extra curl args...]
+  local method="$1" path="$2"; shift 2
+  local base="${COOLIFY_BASE_URL:?set COOLIFY_BASE_URL (e.g. https://coolify.example.com)}"
+  base="${base%/}"
+  local token; token="$(resolve_token)"
+  local response http body
+  response="$(curl -sS -w $'\n%{http_code}' -X "$method" \
+    -H "Authorization: Bearer ${token}" \
+    -H "Content-Type: application/json" \
+    -H "Accept: application/json" \
+    "$@" \
+    "${base}/api/v1${path}")" || die "request failed: ${method} ${path}"
+  http="${response##*$'\n'}"
+  body="${response%$'\n'*}"
+  if [ "$http" -lt 200 ] || [ "$http" -ge 300 ]; then
+    printf '%s\n' "$body" >&2
+    die "HTTP ${http} on ${method} ${path}"
+  fi
+  printf '%s' "$body"
+}
+
+cmd_list()        { api GET "/applications" | pp; }
+cmd_deployments() { api GET "/deployments" | pp; }
+cmd_health()      { api GET "/health"; echo; }
+cmd_version()     { api GET "/version"; echo; }
+
+cmd_status() {
+  local u="${1:?app-uuid required}"
+  if command -v jq >/dev/null 2>&1; then
+    api GET "/applications/${u}" | jq '{uuid, name, status, fqdn, git_repository, git_branch}'
+  else
+    api GET "/applications/${u}"
+  fi
+}
+
+cmd_logs() {
+  local u="${1:?app-uuid required}"
+  local n="${2:-100}"
+  api GET "/applications/${u}/logs?lines=${n}" | pp
+}
+
+cmd_validate() {
+  local u="${1:?app-uuid required}"
+  require jq
+  local app status
+  app="$(api GET "/applications/${u}")"
+  status="$(printf '%s' "$app" | jq -r '.status // "unknown"')"
+  printf '%s' "$app" | jq '{uuid, name, status, fqdn}'
+  case "$status" in
+    *running*|*healthy*) log "application is ${status}"; return 0 ;;
+    *) log "application not healthy (status: ${status}); recent logs:"; cmd_logs "$u" 100; return 2 ;;
+  esac
+}
+
+cmd_deploy() {
+  local u="${1:?app-uuid required}"
+  local force="false"
+  [ "${2:-}" = "--force" ] && force="true"
+  log "triggering deploy for ${u} (force=${force})"
+  api GET "/deploy?uuid=${u}&force=${force}" | pp
+}
+
+cmd_set_env() {
+  local u="${1:?app-uuid required}"
+  local kv="${2:?KEY=VALUE required}"
+  [ "${kv%%=*}" = "$kv" ] && die "expected KEY=VALUE, got: ${kv}"
+  require jq
+  local key="${kv%%=*}" val="${kv#*=}" payload
+  payload="$(jq -n --arg k "$key" --arg v "$val" '{data: [{key: $k, value: $v}]}')"
+  api PATCH "/applications/${u}/envs/bulk" --data "$payload" | pp
+  log "env ${key} set; run '${SCRIPT_NAME} deploy ${u}' to apply"
+}
+
+cmd_create_app_public() {
+  local proj="${1:?project-uuid required}"
+  local server="${2:?server-uuid required}"
+  local git="${3:?git-url required}"
+  local branch="${4:-main}"
+  require jq
+  local payload
+  payload="$(jq -n --arg p "$proj" --arg s "$server" --arg g "$git" --arg b "$branch" \
+    '{project_uuid: $p, server_uuid: $s, git_repository: $g, git_branch: $b, build_pack: "nixpacks", environment_name: "production"}')"
+  api POST "/applications/public" --data "$payload" | pp
+}
+
+cmd_delete_app() {
+  local u="${1:?app-uuid required}"
+  api DELETE "/applications/${u}" | pp
+}
+
+main() {
+  require curl
+  local cmd="${1:-}"; shift || true
+  case "$cmd" in
+    list)              cmd_list "$@" ;;
+    status)            cmd_status "$@" ;;
+    logs)              cmd_logs "$@" ;;
+    deployments)       cmd_deployments "$@" ;;
+    validate)          cmd_validate "$@" ;;
+    deploy)            cmd_deploy "$@" ;;
+    set-env)           cmd_set_env "$@" ;;
+    health)            cmd_health "$@" ;;
+    version)           cmd_version "$@" ;;
+    create-app-public) cmd_create_app_public "$@" ;;
+    delete-app)        cmd_delete_app "$@" ;;
+    -h|--help|help|"")  usage ;;
+    *) die "unknown command: ${cmd} (try --help)" ;;
+  esac
+}
+
+main "$@"
