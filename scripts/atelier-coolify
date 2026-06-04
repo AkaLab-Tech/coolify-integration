@@ -1,0 +1,331 @@
+#!/usr/bin/env bash
+#
+# atelier-coolify — thin client for the Coolify v1 REST API, for atelier agents.
+#
+# Auth is per-project: COOLIFY_API_TOKEN and COOLIFY_BASE_URL are read from the
+# current project's .env (kept gitignored by atelier's .env* guardrail) or from
+# the environment. This supports one operator deploying different projects to
+# different Coolify instances. Exposes a small, auditable set of subcommands;
+# destructive operations (create-app-public, delete-app) are intentionally left
+# out of atelier's allowlist so they require operator confirmation.
+#
+set -euo pipefail
+IFS=$'\n\t'
+
+VERSION="0.1.0"
+SCRIPT_NAME="$(basename "${BASH_SOURCE[0]}")"
+
+log()  { printf '==> %s\n' "$*"; }
+die()  { printf '!!  ERROR: %s\n' "$*" >&2; exit 1; }
+
+require() { command -v "$1" >/dev/null 2>&1 || die "missing dependency: $1"; }
+pp()      { if command -v jq >/dev/null 2>&1; then jq .; else cat; fi; }
+
+# atelier user-level settings.json (persists across tasks; never the per-task
+# template). Resolution order mirrors how atelier/Claude Code locate it.
+ATELIER_SETTINGS="${COOLIFY_ATELIER_SETTINGS:-${ATELIER_CONFIG_DIR:-${CLAUDE_CONFIG_DIR:-$HOME/.claude}}/settings.json}"
+
+# Permissions granted to agents for routine Coolify operations. The gated
+# commands (create-app-public, delete-app) are intentionally absent so they
+# fall back to operator confirmation.
+COOLIFY_ALLOW='[
+  "Bash(atelier-coolify list:*)",
+  "Bash(atelier-coolify status:*)",
+  "Bash(atelier-coolify logs:*)",
+  "Bash(atelier-coolify deployments:*)",
+  "Bash(atelier-coolify validate:*)",
+  "Bash(atelier-coolify deploy:*)",
+  "Bash(atelier-coolify set-env:*)",
+  "Bash(atelier-coolify health:*)",
+  "Bash(atelier-coolify version:*)",
+  "Skill(coolify-integration:*)"
+]'
+
+usage() {
+  cat <<EOF
+${SCRIPT_NAME} ${VERSION}
+
+Thin client for the Coolify v1 API. Reads COOLIFY_API_TOKEN and
+COOLIFY_BASE_URL from the current project's .env (or the environment).
+
+USAGE
+  ${SCRIPT_NAME} <command> [args]
+
+READ-ONLY
+  list                         List applications and their UUIDs
+  status <app-uuid>            Show an application's status
+  logs <app-uuid> [lines]      Recent logs (default 100)
+  deployments                  List running deployments
+  validate <app-uuid>          Status + logs if unhealthy (exit 2 on failure)
+  health                       Coolify instance health
+  version                      Coolify instance version
+
+WRITE (in atelier allowlist)
+  deploy <app-uuid> [--force]  Trigger a deployment
+  set-env <app-uuid> KEY=VALUE Upsert one env var (deploy still required to apply)
+
+GATED (left out of allowlist — operator confirms)
+  create-app-public <project-uuid> <server-uuid> <git-url> [branch]
+  delete-app <app-uuid>
+
+SETUP
+  configure [--non-interactive]  PATH link + permissions, then (interactively,
+                               inside a project) write COOLIFY_BASE_URL and
+                               COOLIFY_API_TOKEN to the project's .env.
+  link [target]                Symlink this CLI onto PATH (default ~/.local/bin)
+  enable-permissions           Merge the read/write allowlist into atelier's
+                               user settings.json (idempotent; never the template)
+  disable-permissions          Remove that allowlist from atelier's user settings
+
+ENVIRONMENT
+  COOLIFY_BASE_URL             Required. e.g. https://coolify.example.com
+  COOLIFY_API_TOKEN            Required. Coolify API token (read/deploy/write).
+  COOLIFY_ENV_FILE             Optional. Path to the project .env (default: .env)
+  COOLIFY_ATELIER_SETTINGS     Optional. Path to atelier's user settings.json
+
+EXIT CODES
+  0 success   1 error   2 validation failure (unhealthy deployment)
+EOF
+}
+
+# Load COOLIFY_BASE_URL / COOLIFY_API_TOKEN from the project's .env without
+# leaking unrelated variables. Real environment values take precedence.
+_load_project_env() {
+  local f="${COOLIFY_ENV_FILE:-.env}" line key val
+  [ -f "$f" ] || return 0
+  while IFS= read -r line || [ -n "$line" ]; do
+    case "$line" in
+      COOLIFY_API_TOKEN=*|COOLIFY_BASE_URL=*)
+        key="${line%%=*}"
+        val="${line#*=}"
+        val="${val%\"}"; val="${val#\"}"
+        val="${val%\'}"; val="${val#\'}"
+        if [ -z "${!key:-}" ]; then export "$key=$val"; fi
+        ;;
+    esac
+  done < "$f"
+}
+
+api() {
+  # api <METHOD> <path> [extra curl args...]
+  local method="$1" path="$2"; shift 2
+  _load_project_env
+  [ -n "${COOLIFY_BASE_URL:-}" ] || die "set COOLIFY_BASE_URL in this project's .env (e.g. https://coolify.example.com)"
+  [ -n "${COOLIFY_API_TOKEN:-}" ] || die "set COOLIFY_API_TOKEN in this project's .env"
+  local base="${COOLIFY_BASE_URL%/}"
+  local token="$COOLIFY_API_TOKEN"
+  local response http body
+  response="$(curl -sS -w $'\n%{http_code}' -X "$method" \
+    -H "Authorization: Bearer ${token}" \
+    -H "Content-Type: application/json" \
+    -H "Accept: application/json" \
+    "$@" \
+    "${base}/api/v1${path}")" || die "request failed: ${method} ${path}"
+  http="${response##*$'\n'}"
+  body="${response%$'\n'*}"
+  if [ "$http" -lt 200 ] || [ "$http" -ge 300 ]; then
+    printf '%s\n' "$body" >&2
+    die "HTTP ${http} on ${method} ${path}"
+  fi
+  printf '%s' "$body"
+}
+
+cmd_list()        { api GET "/applications" | pp; }
+cmd_deployments() { api GET "/deployments" | pp; }
+cmd_health()      { api GET "/health"; echo; }
+cmd_version()     { api GET "/version"; echo; }
+
+cmd_status() {
+  local u="${1:?app-uuid required}"
+  if command -v jq >/dev/null 2>&1; then
+    api GET "/applications/${u}" | jq '{uuid, name, status, fqdn, git_repository, git_branch}'
+  else
+    api GET "/applications/${u}"
+  fi
+}
+
+cmd_logs() {
+  local u="${1:?app-uuid required}"
+  local n="${2:-100}"
+  api GET "/applications/${u}/logs?lines=${n}" | pp
+}
+
+cmd_validate() {
+  local u="${1:?app-uuid required}"
+  require jq
+  local app status
+  app="$(api GET "/applications/${u}")"
+  status="$(printf '%s' "$app" | jq -r '.status // "unknown"')"
+  printf '%s' "$app" | jq '{uuid, name, status, fqdn}'
+  case "$status" in
+    *running*|*healthy*) log "application is ${status}"; return 0 ;;
+    *) log "application not healthy (status: ${status}); recent logs:"; cmd_logs "$u" 100; return 2 ;;
+  esac
+}
+
+cmd_deploy() {
+  local u="${1:?app-uuid required}"
+  local force="false"
+  [ "${2:-}" = "--force" ] && force="true"
+  log "triggering deploy for ${u} (force=${force})"
+  api GET "/deploy?uuid=${u}&force=${force}" | pp
+}
+
+cmd_set_env() {
+  local u="${1:?app-uuid required}"
+  local kv="${2:?KEY=VALUE required}"
+  [ "${kv%%=*}" = "$kv" ] && die "expected KEY=VALUE, got: ${kv}"
+  require jq
+  local key="${kv%%=*}" val="${kv#*=}" payload
+  payload="$(jq -n --arg k "$key" --arg v "$val" '{data: [{key: $k, value: $v}]}')"
+  api PATCH "/applications/${u}/envs/bulk" --data "$payload" | pp
+  log "env ${key} set; run '${SCRIPT_NAME} deploy ${u}' to apply"
+}
+
+cmd_create_app_public() {
+  local proj="${1:?project-uuid required}"
+  local server="${2:?server-uuid required}"
+  local git="${3:?git-url required}"
+  local branch="${4:-main}"
+  require jq
+  local payload
+  payload="$(jq -n --arg p "$proj" --arg s "$server" --arg g "$git" --arg b "$branch" \
+    '{project_uuid: $p, server_uuid: $s, git_repository: $g, git_branch: $b, build_pack: "nixpacks", environment_name: "production"}')"
+  api POST "/applications/public" --data "$payload" | pp
+}
+
+cmd_delete_app() {
+  local u="${1:?app-uuid required}"
+  api DELETE "/applications/${u}" | pp
+}
+
+cmd_enable_permissions() {
+  require jq
+  local file="$ATELIER_SETTINGS" tmp
+  mkdir -p "$(dirname "$file")"
+  [ -f "$file" ] || printf '{}\n' > "$file"
+  jq empty "$file" 2>/dev/null || die "not valid JSON: ${file}"
+  tmp="$(mktemp)"
+  # Append only entries not already present; preserve existing order; touch
+  # nothing else in the file.
+  jq --argjson add "$COOLIFY_ALLOW" '
+    .permissions = (.permissions // {})
+    | .permissions.allow = ((.permissions.allow // []) as $cur
+        | $cur + ($add - $cur))
+  ' "$file" > "$tmp" && mv "$tmp" "$file"
+  log "coolify permissions merged into ${file}"
+}
+
+cmd_disable_permissions() {
+  require jq
+  local file="$ATELIER_SETTINGS" tmp
+  [ -f "$file" ] || { log "nothing to do (${file} does not exist)"; return 0; }
+  jq empty "$file" 2>/dev/null || die "not valid JSON: ${file}"
+  tmp="$(mktemp)"
+  jq --argjson rm "$COOLIFY_ALLOW" '
+    if .permissions.allow then .permissions.allow -= $rm else . end
+  ' "$file" > "$tmp" && mv "$tmp" "$file"
+  log "coolify permissions removed from ${file}"
+}
+
+# Resolve this script's real path (following symlinks), portably for bash 3.2.
+_self_path() {
+  local src="${BASH_SOURCE[0]}" dir
+  while [ -h "$src" ]; do
+    dir="$(cd -P "$(dirname "$src")" && pwd)"
+    src="$(readlink "$src")"
+    case "$src" in /*) ;; *) src="${dir}/${src}" ;; esac
+  done
+  dir="$(cd -P "$(dirname "$src")" && pwd)"
+  printf '%s/%s' "$dir" "$(basename "$src")"
+}
+
+cmd_link() {
+  local target="${1:-$HOME/.local/bin/atelier-coolify}" dir
+  dir="$(dirname "$target")"
+  mkdir -p "$dir"
+  ln -sf "$(_self_path)" "$target"
+  log "linked CLI -> ${target}"
+  case ":${PATH}:" in
+    *":${dir}:"*) ;;
+    *) log "note: ${dir} is not on your PATH — add it to use 'atelier-coolify' directly" ;;
+  esac
+}
+
+_set_env_var() {
+  local file="$1" key="$2" val="$3"
+  touch "$file"
+  if grep -q "^${key}=" "$file" 2>/dev/null; then
+    log "${key} already present in ${file} — leaving it"
+  else
+    printf '%s=%s\n' "$key" "$val" >> "$file"
+    log "added ${key} to ${file}"
+  fi
+}
+
+_configure_project_env() {
+  local envf="${COOLIFY_ENV_FILE:-.env}" url token
+  if grep -q '^COOLIFY_BASE_URL=' "$envf" 2>/dev/null; then
+    log "COOLIFY_BASE_URL already in ${envf}"
+  else
+    printf 'Coolify base URL for this project (e.g. https://coolify.example.com, Enter to skip): '
+    read -r url
+    if [ -n "$url" ]; then _set_env_var "$envf" COOLIFY_BASE_URL "$url"; else log "skipped base URL"; fi
+  fi
+  if grep -q '^COOLIFY_API_TOKEN=' "$envf" 2>/dev/null; then
+    log "COOLIFY_API_TOKEN already in ${envf}"
+  else
+    printf 'Coolify API token for this project (input hidden, Enter to skip): '
+    read -rs token; echo
+    if [ -n "$token" ]; then _set_env_var "$envf" COOLIFY_API_TOKEN "$token"; else log "skipped token"; fi
+  fi
+  log "auth lives in ${envf} (atelier keeps .env* gitignored)"
+}
+
+cmd_configure() {
+  local interactive=true
+  [ "${1:-}" = "--non-interactive" ] && interactive=false
+  [ -t 0 ] || interactive=false
+
+  cmd_link
+  cmd_enable_permissions
+
+  if [ "$interactive" = false ]; then
+    log "non-interactive — PATH + permissions done"
+    log "per project: add COOLIFY_BASE_URL and COOLIFY_API_TOKEN to that project's .env"
+    return 0
+  fi
+
+  if [ -e .git ] || [ -f package.json ] || [ -f .env ]; then
+    _configure_project_env
+  else
+    log "not inside a project — add COOLIFY_BASE_URL and COOLIFY_API_TOKEN to a"
+    log "project's .env, or re-run 'atelier-coolify configure' from its directory."
+  fi
+}
+
+main() {
+  require curl
+  local cmd="${1:-}"; shift || true
+  case "$cmd" in
+    list)                cmd_list "$@" ;;
+    status)              cmd_status "$@" ;;
+    logs)                cmd_logs "$@" ;;
+    deployments)         cmd_deployments "$@" ;;
+    validate)            cmd_validate "$@" ;;
+    deploy)              cmd_deploy "$@" ;;
+    set-env)             cmd_set_env "$@" ;;
+    health)              cmd_health "$@" ;;
+    version)             cmd_version "$@" ;;
+    create-app-public)   cmd_create_app_public "$@" ;;
+    delete-app)          cmd_delete_app "$@" ;;
+    enable-permissions)  cmd_enable_permissions "$@" ;;
+    disable-permissions) cmd_disable_permissions "$@" ;;
+    configure)           cmd_configure "$@" ;;
+    link)                cmd_link "$@" ;;
+    -h|--help|help|"")   usage ;;
+    *) die "unknown command: ${cmd} (try --help)" ;;
+  esac
+}
+
+main "$@"
