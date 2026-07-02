@@ -12,7 +12,7 @@
 set -euo pipefail
 IFS=$'\n\t'
 
-VERSION="0.3.0"
+VERSION="0.4.0"
 SCRIPT_NAME="$(basename "${BASH_SOURCE[0]}")"
 
 log()  { printf '==> %s\n' "$*"; }
@@ -87,10 +87,13 @@ GATED (left out of allowlist — operator confirms; --yes skips the prompt)
                                require --yes.
 
 SETUP
-  configure [--non-interactive]  PATH link + permissions, then (interactively,
+  configure [--non-interactive]  PATH launcher + permissions, then (interactively,
                                inside a project) write COOLIFY_BASE_URL and
                                COOLIFY_API_TOKEN to the project's .env.
-  link [target]                Symlink this CLI onto PATH (default ~/.local/bin)
+  link [target]                Install a self-resolving launcher onto PATH
+                               (default ~/.local/bin); it re-resolves the active
+                               plugin install on every run, so plugin updates
+                               never leave the command stale
   enable-permissions           Merge the read/write allowlist into atelier's
                                user settings.json (idempotent; never the template)
   disable-permissions          Remove that allowlist from atelier's user settings
@@ -373,12 +376,49 @@ _self_path() {
   printf '%s/%s' "$dir" "$(basename "$src")"
 }
 
+# Install a small self-resolving launcher onto PATH. A plain symlink to
+# _self_path goes stale after every `claude plugin update` (the plugin cache
+# path is versioned, e.g. .../coolify-integration/0.3.0/...), so the launcher
+# re-resolves the active install from Claude Code's installed_plugins.json at
+# every invocation and only falls back to the link-time path (git-clone / dev
+# installs, or no manifest). Idempotent: re-linking rewrites the launcher.
 cmd_link() {
-  local target="${1:-$HOME/.local/bin/atelier-coolify}" dir
+  local target="${1:-$HOME/.local/bin/atelier-coolify}" dir self tmp
   dir="$(dirname "$target")"
   mkdir -p "$dir"
-  ln -sf "$(_self_path)" "$target"
-  log "linked CLI -> ${target}"
+  self="$(_self_path)"
+  tmp="$(mktemp "${dir}/.atelier-coolify.XXXXXX")" || die "mktemp failed in ${dir}"
+  {
+    cat <<'LAUNCHER'
+#!/usr/bin/env bash
+# atelier-coolify launcher — installed by `atelier-coolify link`. Resolves the
+# ACTIVE plugin-cache version at every invocation via Claude Code's pointer
+# file, so `claude plugin update` never leaves this command stale.
+set -euo pipefail
+manifest="${ATELIER_CONFIG_DIR:-$HOME/.claude-work}/plugins/installed_plugins.json"
+root=""
+[ -f "$manifest" ] && root="$(jq -r '.plugins["coolify-integration@akalab-tech"][0].installPath // empty' "$manifest" 2>/dev/null || true)"
+if [ -n "$root" ] && [ -x "$root/scripts/atelier-coolify" ]; then
+  exec "$root/scripts/atelier-coolify" "$@"
+fi
+# fallback: the path recorded at link time (git-clone / dev installs, or no manifest)
+LAUNCHER
+    printf 'fallback=%q\n' "$self"
+    cat <<'LAUNCHER'
+[ -x "$fallback" ] && exec "$fallback" "$@"
+echo "atelier-coolify: no active install found (manifest: $manifest; fallback: $fallback)" >&2
+echo "reinstall with: CLAUDE_CONFIG_DIR=\"\${ATELIER_CONFIG_DIR:-\$HOME/.claude-work}\" claude plugin install coolify-integration@akalab-tech" >&2
+exit 1
+LAUNCHER
+  } > "$tmp"
+  chmod +x "$tmp"
+  # Remove the old target BEFORE installing: writing through an existing
+  # symlink (e.g. a bare `>` redirect) follows it and would clobber the
+  # plugin-cache script it points at. rm + mv replaces the name atomically
+  # without ever writing through it.
+  rm -f "$target"
+  mv "$tmp" "$target"
+  log "installed launcher -> ${target} (re-resolves the active plugin install on every run)"
   case ":${PATH}:" in
     *":${dir}:"*) ;;
     *) log "note: ${dir} is not on your PATH — add it to use 'atelier-coolify' directly" ;;

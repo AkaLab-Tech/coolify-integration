@@ -8,9 +8,9 @@ deploying with Coolify.
 
 ## Stack
 
-- **Language**: Bash (single-file CLI — `scripts/atelier-coolify`, v0.2.0)
+- **Language**: Bash (single-file CLI — `scripts/atelier-coolify`, v0.4.0)
 - **Framework**: None — plain shell + `curl` + optional `jq`
-- **Package manager**: None (no build step; CLI is symlinked onto PATH via `atelier-coolify link`)
+- **Package manager**: None (no build step; `atelier-coolify link` installs a self-resolving launcher onto PATH)
 - **Test runner**: TBD — no test files found
 - **Linter / formatter**: TBD — no linter config found
 
@@ -23,8 +23,8 @@ The repo has a flat layout with no `src/` or `lib/`:
   `deploy`, `set-env`, `create-app-public`, `delete-app`, plus setup helpers)
 - `skills/coolify/SKILL.md` — Claude Code skill that drives the CLI within an
   atelier session; encodes the validate-and-fix flow and deploy-mode rules
-- `commands/setup.md` — `/coolify-integration:setup` slash command; wires PATH
-  symlink, user-level allowlist, and per-project `.env` auth
+- `commands/setup.md` — `/coolify-integration:setup` slash command; wires the
+  PATH launcher, user-level allowlist, and per-project `.env` auth
 - `.claude-plugin/plugin.json` — Claude Code plugin manifest (name, version,
   description, homepage)
 
@@ -35,7 +35,8 @@ are merged into the user-level `settings.json` — never the per-task template.
 ## Conventions
 
 - **CLI entrypoint**: `scripts/atelier-coolify <command>` — or `atelier-coolify`
-  after `atelier-coolify link` places a symlink on PATH
+  after `atelier-coolify link` places a self-resolving launcher on PATH (it
+  follows the active plugin-cache version across `claude plugin update`)
 - **Setup**: `atelier-coolify configure` (interactive) or
   `/coolify-integration:setup` (from a Claude Code session)
 - **Permissions**: `atelier-coolify enable-permissions` merges the allowlist into
