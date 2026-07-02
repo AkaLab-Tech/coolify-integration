@@ -5,7 +5,7 @@ Completed work log. Newest first. Each entry references the PR(s) that delivered
 ## 2026-07
 
 ### Self-resolving CLI launcher — `link` survives plugin updates — 2026-07-02
-**PR:** _pending_ (branch `fix/self-resolving-cli-launcher`)
+**PR:** [#6](https://github.com/AkaLab-Tech/coolify-integration/pull/6) — branch `fix/self-resolving-cli-launcher`
 
 `atelier-coolify link` symlinked `~/.local/bin/atelier-coolify` to the script's
 resolved path. Run from Claude Code's plugin cache that path is versioned
