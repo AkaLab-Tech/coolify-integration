@@ -27,8 +27,8 @@ operator can deploy different projects to different instances. Run
 | `atelier-coolify deploy-mode <uuid>` | Report deploy mode: `auto` (push deploys) vs `manual`; cached per project |
 | `atelier-coolify deploy <uuid> [--force]` | Trigger a deployment |
 | `atelier-coolify set-env <uuid> KEY=VALUE` | Upsert an env var |
-| `atelier-coolify create-app-public …` | Create an app (operator confirmation) |
-| `atelier-coolify delete-app <uuid>` | Delete an app (operator confirmation) |
+| `atelier-coolify create-app-public … [--yes]` | Create an app (operator confirmation; prompts unless `--yes`) |
+| `atelier-coolify delete-app <uuid> [--yes]` | Delete an app (operator confirmation; prompts for the uuid unless `--yes`) |
 
 ## Know how the app deploys before triggering anything
 
@@ -66,6 +66,10 @@ the app's git/auto-deploy wiring in Coolify.
 - Check `deploy-mode` before triggering a deploy on a code change; on `auto`
   apps a push already deploys — do not call `deploy`.
 - `create-app-public` and `delete-app` are not in the allowlist — confirm with
-  the operator before running them.
+  the operator before running them. They also confirm in-CLI: without `--yes`,
+  `create-app-public` asks y/N and `delete-app` requires typing the app uuid
+  back (both need a TTY; non-interactive runs die unless `--yes` is passed).
+  Pass `--yes` only after the operator has explicitly approved that exact
+  operation.
 - After `set-env`, a `deploy` is required for the change to take effect (this
   holds even on auto-deploy apps).
