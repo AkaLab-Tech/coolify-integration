@@ -21,6 +21,9 @@ die()  { printf '!!  ERROR: %s\n' "$*" >&2; exit 1; }
 require() { command -v "$1" >/dev/null 2>&1 || die "missing dependency: $1"; }
 pp()      { if command -v jq >/dev/null 2>&1; then jq .; else cat; fi; }
 
+# Percent-encode a value for safe interpolation into a URL query string.
+_uri()    { require jq; jq -rn --arg v "$1" '$v|@uri'; }
+
 # atelier user-level settings.json (persists across tasks; never the per-task
 # template). Resolution order mirrors how atelier/Claude Code locate it.
 ATELIER_SETTINGS="${COOLIFY_ATELIER_SETTINGS:-${ATELIER_CONFIG_DIR:-${CLAUDE_CONFIG_DIR:-$HOME/.claude}}/settings.json}"
@@ -74,9 +77,14 @@ WRITE (in atelier allowlist)
   deploy <app-uuid> [--force]  Trigger a deployment
   set-env <app-uuid> KEY=VALUE Upsert one env var (deploy still required to apply)
 
-GATED (left out of allowlist — operator confirms)
-  create-app-public <project-uuid> <server-uuid> <git-url> [branch]
-  delete-app <app-uuid>
+GATED (left out of allowlist — operator confirms; --yes skips the prompt)
+  create-app-public <project-uuid> <server-uuid> <git-url> [branch] [--yes]
+                               Without --yes: y/N prompt on a TTY, refusal
+                               otherwise.
+  delete-app <app-uuid> [--yes]
+                               Without --yes: on a TTY you must type the app
+                               uuid back to confirm; non-interactive runs
+                               require --yes.
 
 SETUP
   configure [--non-interactive]  PATH link + permissions, then (interactively,
@@ -127,8 +135,11 @@ api() {
   local base="${COOLIFY_BASE_URL%/}"
   local token="$COOLIFY_API_TOKEN"
   local response http body
+  # The Authorization header reaches curl through a process-substitution fd
+  # (-H @file, curl >= 7.55) instead of argv, so the token never appears in
+  # the process list (`ps`) while the request runs.
   response="$(curl -sS -w $'\n%{http_code}' -X "$method" \
-    -H "Authorization: Bearer ${token}" \
+    -H @<(printf 'Authorization: Bearer %s\n' "$token") \
     -H "Content-Type: application/json" \
     -H "Accept: application/json" \
     "$@" \
@@ -163,7 +174,7 @@ cmd_status() {
 cmd_logs() {
   local u="${1:?app-uuid required}"
   local n="${2:-100}"
-  api GET "/applications/${u}/logs?lines=${n}" | pp
+  api GET "/applications/${u}/logs?lines=$(_uri "$n")" | pp
 }
 
 cmd_validate() {
@@ -249,7 +260,7 @@ cmd_deploy() {
   local force="false"
   [ "${2:-}" = "--force" ] && force="true"
   log "triggering deploy for ${u} (force=${force})"
-  api GET "/deploy?uuid=${u}&force=${force}" | pp
+  api GET "/deploy?uuid=$(_uri "$u")&force=${force}" | pp
 }
 
 cmd_set_env() {
@@ -263,12 +274,41 @@ cmd_set_env() {
   log "env ${key} set; run '${SCRIPT_NAME} deploy ${u}' to apply"
 }
 
+# Split --yes/-y out of "$@" for the gated commands. Sets _CONFIRMED=true when
+# the flag is present and leaves the positional args in _ARGS (bash 3.2 safe).
+_parse_yes() {
+  local a
+  _CONFIRMED="false"
+  _ARGS=()
+  for a in "$@"; do
+    case "$a" in
+      --yes|-y) _CONFIRMED="true" ;;
+      *)        _ARGS+=("$a") ;;
+    esac
+  done
+}
+
 cmd_create_app_public() {
+  _parse_yes "$@"
+  set -- ${_ARGS[@]+"${_ARGS[@]}"}
   local proj="${1:?project-uuid required}"
   local server="${2:?server-uuid required}"
   local git="${3:?git-url required}"
   local branch="${4:-main}"
   require jq
+  if [ "$_CONFIRMED" != "true" ]; then
+    if [ -t 0 ]; then
+      printf 'Create app from %s (branch %s) in project %s on server %s? [y/N] ' \
+        "$git" "$branch" "$proj" "$server"
+      local answer; read -r answer
+      case "$answer" in
+        y|Y|yes|YES|Yes) ;;
+        *) die "aborted (answer 'y' to confirm, or pass --yes)" ;;
+      esac
+    else
+      die "create-app-public creates a resource on the Coolify server and needs confirmation: pass --yes, or run interactively to confirm at the prompt"
+    fi
+  fi
   local payload
   payload="$(jq -n --arg p "$proj" --arg s "$server" --arg g "$git" --arg b "$branch" \
     '{project_uuid: $p, server_uuid: $s, git_repository: $g, git_branch: $b, build_pack: "nixpacks", environment_name: "production"}')"
@@ -276,7 +316,19 @@ cmd_create_app_public() {
 }
 
 cmd_delete_app() {
+  _parse_yes "$@"
+  set -- ${_ARGS[@]+"${_ARGS[@]}"}
   local u="${1:?app-uuid required}"
+  if [ "$_CONFIRMED" != "true" ]; then
+    if [ -t 0 ]; then
+      log "delete-app permanently removes application ${u} from Coolify"
+      printf 'Type the app uuid back to confirm deletion: '
+      local answer; read -r answer
+      [ "$answer" = "$u" ] || die "confirmation did not match app uuid — nothing deleted"
+    else
+      die "delete-app is destructive and needs confirmation: pass --yes, or run interactively and type the app uuid back at the prompt"
+    fi
+  fi
   api DELETE "/applications/${u}" | pp
 }
 

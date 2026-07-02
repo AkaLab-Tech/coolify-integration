@@ -97,8 +97,11 @@ persists across tasks and applies on top of atelier's per-task settings:
 
 The merge is idempotent and order-preserving, and touches nothing else in the
 file. The gated commands (`create-app-public`, `delete-app`) are deliberately
-omitted so they fall back to operator confirmation. Undo with
-`atelier-coolify disable-permissions`.
+omitted so they fall back to operator confirmation. As defense-in-depth they
+also confirm in-CLI: without `--yes`, `create-app-public` asks y/N and
+`delete-app` requires typing the app uuid back before anything is sent to the
+API; non-interactive runs (no TTY) refuse to proceed unless `--yes` is passed.
+Undo the allowlist with `atelier-coolify disable-permissions`.
 
 ## API compatibility
 
