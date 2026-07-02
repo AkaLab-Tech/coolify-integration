@@ -6,7 +6,7 @@ allowed-tools: Bash(${CLAUDE_PLUGIN_ROOT}/scripts/atelier-coolify:*), Read(.env)
 Set up the coolify-integration plugin, then report a short summary. Do every
 step in order:
 
-1. Run the machine-wide part of setup (PATH symlink + user-level allowlist
+1. Run the machine-wide part of setup (PATH launcher + user-level allowlist
    merge — never atelier's per-task template):
 
    ```sh
@@ -28,4 +28,5 @@ step in order:
 Report: PATH link status, permissions merged, whether `.env` now has
 `COOLIFY_BASE_URL` + `COOLIFY_API_TOKEN` (token presence only, never the value),
 and the connection check result. To undo the machine-wide part later, run
-`atelier-coolify disable-permissions` and remove the symlink.
+`atelier-coolify disable-permissions` and remove the launcher
+(`~/.local/bin/atelier-coolify`).
