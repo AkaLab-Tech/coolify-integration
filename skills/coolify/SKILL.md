@@ -15,6 +15,30 @@ description: >-
 operator can deploy different projects to different instances. Run
 `atelier-coolify --help` for the full reference.
 
+## Working directory matters — check before you conclude "not configured"
+
+`atelier-coolify` resolves `.env` **relative to its own process cwd**, with no
+upward search and no awareness of worktrees or multi-project workspaces. Your
+`Bash` cwd is whatever the session inherited (often the workspace root, a
+sibling project, or a task worktree) — **not necessarily the project whose
+Coolify app you're working with.** A "COOLIFY_BASE_URL not set" error from the
+wrong cwd is not evidence that Coolify is unconfigured.
+
+Before running any `atelier-coolify` command, or telling the operator Coolify
+needs setup:
+
+1. Identify the actual project root — the repo whose app you're
+   validating/deploying — and target the CLI at it explicitly: either
+   `cd <project-root> && atelier-coolify ...`, or
+   `COOLIFY_ENV_FILE=<project-root>/.env atelier-coolify ...`.
+2. If a call still fails, check that project's own `.env` yourself —
+   `grep -c '^COOLIFY_' <project-root>/.env` — before asking the operator.
+   Never print the token value.
+3. Only report Coolify as unconfigured, and only ask the operator for the
+   URL/token, if that specific project's `.env` genuinely lacks them after
+   step 2. Do not ask the operator to open Coolify in a browser to read out
+   values you have not first checked for in `.env`.
+
 ## Commands
 
 | Command | Purpose |
