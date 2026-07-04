@@ -65,13 +65,19 @@ atelier-coolify set-env <uuid> API_URL=https://api.example.com
 atelier-coolify deploy <uuid>                # apply the change
 ```
 
-`deploy-mode` reports whether the app auto-deploys on a push to its watched
-branch (GitHub App wiring) or needs a manual `deploy`. On an auto-deploy app a
-push to the watched branch *is* the deploy, so the `coolify` skill skips the
-redundant manual trigger for code changes (a `set-env` change still needs a
-`deploy`, since it does not go through git). The result is cached per project in
-`.coolify-deploy-mode.json` — add that file to the project's `.gitignore`; pass
-`--refresh` after changing the app's git settings in Coolify.
+`deploy-mode` is meant to report whether the app auto-deploys on a push to its
+watched branch (GitHub App wiring) or needs a manual `deploy`, but Coolify's
+`/api/v1/applications/{uuid}` never exposes the `is_auto_deploy_enabled` flag
+(it lives on a `settings` relation the endpoint does not eager-load), so this
+cannot currently be read from the API. Every app therefore resolves to
+`deploy_mode: "unknown"` and the `coolify` skill treats it as **manual** — always
+run an explicit `deploy` for code changes; the "skip the redundant deploy on
+auto-configured apps" optimization stays dormant until Coolify exposes the flag
+or you override it. The result is cached per project in
+`.coolify-deploy-mode.json` — add that file to the project's `.gitignore`. To
+mark a specific app as known-auto, hand-edit its entry in that cache file
+(`deploy_mode: "auto"`); it is read back verbatim (`source: "cache"`) and never
+overwritten except by `--refresh`.
 
 ## How permissions work
 

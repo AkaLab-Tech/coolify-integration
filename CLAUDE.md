@@ -8,7 +8,7 @@ deploying with Coolify.
 
 ## Stack
 
-- **Language**: Bash (single-file CLI — `scripts/atelier-coolify`, v0.4.0)
+- **Language**: Bash (single-file CLI — `scripts/atelier-coolify`, v0.4.1)
 - **Framework**: None — plain shell + `curl` + optional `jq`
 - **Package manager**: None (no build step; `atelier-coolify link` installs a self-resolving launcher onto PATH)
 - **Test runner**: TBD — no test files found
@@ -41,8 +41,13 @@ are merged into the user-level `settings.json` — never the per-task template.
   `/coolify-integration:setup` (from a Claude Code session)
 - **Permissions**: `atelier-coolify enable-permissions` merges the allowlist into
   `$ATELIER_CONFIG_DIR/settings.json`; `disable-permissions` removes it
-- **Deploy-mode cache**: `.coolify-deploy-mode.json` — add to target project's
-  `.gitignore`; pass `--refresh` after changing git/auto-deploy settings
+- **Deploy-mode cache**: `.coolify-deploy-mode.json` — the auto-deploy flag
+  cannot currently be read from Coolify's API (`is_auto_deploy_enabled` lives
+  on a `settings` relation the applications endpoint does not eager-load), so
+  every app resolves live to `deploy_mode: "unknown"` (treated as manual).
+  Hand-edit an app's cache entry to `"deploy_mode": "auto"` to override; add
+  the file to the target project's `.gitignore`; `--refresh` re-queries the
+  live API (resets to `"unknown"`)
 - **No CI**: no `.github/workflows/` directory found
 
 ## What this project is NOT

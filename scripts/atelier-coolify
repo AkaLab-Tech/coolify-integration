@@ -12,7 +12,7 @@
 set -euo pipefail
 IFS=$'\n\t'
 
-VERSION="0.4.0"
+VERSION="0.4.1"
 SCRIPT_NAME="$(basename "${BASH_SOURCE[0]}")"
 
 log()  { printf '==> %s\n' "$*"; }
@@ -67,9 +67,12 @@ READ-ONLY
   logs <app-uuid> [lines]      Recent logs (default 100)
   deployments                  List running deployments
   validate <app-uuid>          Status + logs if unhealthy (exit 2 on failure)
-  deploy-mode <app-uuid>       Report deploy mode: 'auto' (a push to the watched
-                               [--refresh]            branch deploys) vs 'manual'.
-                               Cached per project; --refresh re-queries the API.
+  deploy-mode <app-uuid>       The Coolify API cannot currently expose whether
+                               [--refresh]            an app auto-deploys on push, so this
+                               always reports 'unknown' for a fresh app (treat
+                               it as manual: run 'deploy' after code changes).
+                               Hand-edit the per-project cache file to override
+                               a known-auto app; --refresh re-queries the API.
   health                       Coolify instance health
   version                      Coolify instance version
 
@@ -164,11 +167,7 @@ cmd_version()     { api GET "/version"; echo; }
 cmd_status() {
   local u="${1:?app-uuid required}"
   if command -v jq >/dev/null 2>&1; then
-    api GET "/applications/${u}" | jq '{uuid, name, status, fqdn, git_repository, git_branch,
-      auto_deploy: (if (.settings|type=="object") and (.settings|has("is_auto_deploy_enabled")) then .settings.is_auto_deploy_enabled
-                    elif has("is_auto_deploy_enabled") then .is_auto_deploy_enabled
-                    elif has("auto_deploy_enabled")    then .auto_deploy_enabled
-                    else null end)}'
+    api GET "/applications/${u}" | jq '{uuid, name, status, fqdn, git_repository, git_branch}'
   else
     api GET "/applications/${u}"
   fi
@@ -234,26 +233,21 @@ cmd_deploy_mode() {
     fi
   fi
 
-  # Coolify exposes the auto-deploy flag and git wiring under version-dependent
-  # field names; probe the known locations and fall back to "unknown".
+  # Coolify's GET /applications/{uuid} never eager-loads the `settings`
+  # relation that holds `is_auto_deploy_enabled`, so that flag (and its
+  # flattened aliases) is never present on this response — there is no
+  # readable API surface to tell auto from manual. Report the honest
+  # terminal state instead of guessing; see task #8.
   local app entry
   app="$(api GET "/applications/${u}")"
-  # NB: jq's `//` discards `false` as well as `null`, so probe presence with
-  # `has` to tell an explicit `false` (manual) apart from an absent flag (unknown).
   entry="$(printf '%s' "$app" | jq --arg u "$u" '
-    (if   (.settings|type=="object") and (.settings|has("is_auto_deploy_enabled")) then .settings.is_auto_deploy_enabled
-     elif has("is_auto_deploy_enabled") then .is_auto_deploy_enabled
-     elif has("auto_deploy_enabled")    then .auto_deploy_enabled
-     else null end) as $auto
-    | { uuid: (.uuid // $u),
-        name: .name,
-        git_repository: (.git_repository // .git_full_url // null),
-        watched_branch: (.git_branch // .branch // null),
-        git_source_connected: ((.source_id // .source.id // .git_source_id // null) != null),
-        auto_deploy_enabled: $auto,
-        deploy_mode: (if $auto == true then "auto"
-                      elif $auto == false then "manual"
-                      else "unknown" end) }')"
+    { uuid: (.uuid // $u),
+      name: .name,
+      git_repository: (.git_repository // .git_full_url // null),
+      watched_branch: (.git_branch // .branch // null),
+      git_source_connected: ((.source_id // .source.id // .git_source_id // null) != null),
+      auto_deploy_enabled: null,
+      deploy_mode: "unknown" }')"
   _deploy_mode_cache_put "$u" "$entry"
   printf '%s' "$entry" | jq '. + {source: "live"}'
 }
