@@ -4,6 +4,27 @@ Completed work log. Newest first. Each entry references the PR(s) that delivered
 
 ## 2026-07
 
+### Honest deploy-mode when Coolify omits auto-deploy flag — 2026-07-05
+**PR:** [#11](https://github.com/AkaLab-Tech/coolify-integration/pull/11) — branch `fix/deploy-mode-unknown`
+
+Coolify's application endpoints do not expose the `ApplicationSetting`
+auto-deploy flag, so `deploy-mode` was probing field names that never appear
+and caching `unknown` as if it were a version quirk.
+
+**Delivered:**
+- `deploy-mode` no longer probes unreachable `settings.is_auto_deploy_enabled`
+  / flattened flag guesses; live reads now report the honest terminal state
+  `deploy_mode: "unknown"` with app git context.
+- `status` no longer emits a permanently null `auto_deploy` field.
+- README, skill guidance, and project notes now state that `unknown` is treated
+  as manual unless an operator confirms auto-deploy via the per-project cache.
+- Version 0.4.0 -> 0.4.1 (`plugin.json` + CLI `VERSION`).
+
+**Tests:** `bash -n` + `shellcheck -S warning` clean; hermetic scratch check
+that a mocked `GET /applications/{uuid}` with no settings relation yields
+`deploy_mode: "unknown"`, a hand-seeded cache entry is honored, a pre-fix-format
+cache entry does not crash, and `status` no longer emits `auto_deploy`.
+
 ### Self-resolving CLI launcher — `link` survives plugin updates — 2026-07-02
 **PR:** [#6](https://github.com/AkaLab-Tech/coolify-integration/pull/6) — branch `fix/self-resolving-cli-launcher`
 

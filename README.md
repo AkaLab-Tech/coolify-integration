@@ -59,19 +59,20 @@ Run `atelier-coolify --help`, or let the `coolify` skill drive it. Common flow:
 
 ```sh
 atelier-coolify list                         # find the app UUID
-atelier-coolify deploy-mode <uuid>           # auto-deploy on push, or manual?
+atelier-coolify deploy-mode <uuid>           # cached/known deploy mode
 atelier-coolify validate <uuid>              # status + logs if unhealthy
 atelier-coolify set-env <uuid> API_URL=https://api.example.com
 atelier-coolify deploy <uuid>                # apply the change
 ```
 
-`deploy-mode` reports whether the app auto-deploys on a push to its watched
-branch (GitHub App wiring) or needs a manual `deploy`. On an auto-deploy app a
-push to the watched branch *is* the deploy, so the `coolify` skill skips the
-redundant manual trigger for code changes (a `set-env` change still needs a
-`deploy`, since it does not go through git). The result is cached per project in
-`.coolify-deploy-mode.json` — add that file to the project's `.gitignore`; pass
-`--refresh` after changing the app's git settings in Coolify.
+`deploy-mode` records the app's git context, but Coolify's current application
+API does not expose the auto-deploy flag. Live reads therefore return
+`deploy_mode: "unknown"`, which the `coolify` skill treats as manual: run an
+explicit `deploy` for code changes unless you know the app auto-deploys. If an
+operator has confirmed an app is auto-deployed, they can hand-edit the
+per-project `.coolify-deploy-mode.json` cache with `{"deploy_mode":"auto"}` for
+that app uuid; cached entries are honored until `--refresh` re-queries the API.
+Add the cache file to the project's `.gitignore`.
 
 ## How permissions work
 

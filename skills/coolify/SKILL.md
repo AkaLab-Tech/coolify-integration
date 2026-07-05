@@ -48,7 +48,7 @@ needs setup:
 | `atelier-coolify logs <uuid> [lines]` | Recent logs |
 | `atelier-coolify deployments` | Running deployments |
 | `atelier-coolify validate <uuid>` | Status + logs if unhealthy (exit 2 on failure) |
-| `atelier-coolify deploy-mode <uuid>` | Report deploy mode: `auto` (push deploys) vs `manual`; cached per project |
+| `atelier-coolify deploy-mode <uuid>` | Report cached/known deploy mode; live API reads return `unknown` |
 | `atelier-coolify deploy <uuid> [--force]` | Trigger a deployment |
 | `atelier-coolify set-env <uuid> KEY=VALUE` | Upsert an env var |
 | `atelier-coolify create-app-public … [--yes]` | Create an app (operator confirmation; prompts unless `--yes`) |
@@ -57,23 +57,26 @@ needs setup:
 ## Know how the app deploys before triggering anything
 
 Many apps are wired through Coolify's GitHub App so that a push to the watched
-branch **auto-deploys**. For those, calling `deploy` manually is redundant and
-can double-trigger. Resolve the deploy mode once with `deploy-mode <uuid>`:
+branch **auto-deploys**. However, Coolify's application API does not currently
+expose that flag to this plugin, so a live `deploy-mode <uuid>` cannot prove
+whether an app is auto or manual:
 
 - `deploy_mode: "auto"` — a `git push`/merge to `watched_branch` **is** the
-  deploy. Do not run `deploy` for code changes; just push and then `validate`.
-- `deploy_mode: "manual"` — Coolify will not deploy on push; run `deploy <uuid>`
-  yourself after the code lands.
-- `deploy_mode: "unknown"` — the API did not expose the flag. Treat as manual
-  and tell the operator the mode could not be confirmed.
+  deploy. This only appears from an operator-confirmed cache override.
+- `deploy_mode: "manual"` — run `deploy <uuid>` yourself after the code lands.
+- `deploy_mode: "unknown"` — live API reads land here because the flag is not
+  exposed. Treat as manual and tell the operator the mode could not be
+  confirmed.
 
 `deploy-mode` caches the result per project (`.coolify-deploy-mode.json`), so it
-is resolved once, not re-assumed every run. Pass `--refresh` after you change
-the app's git/auto-deploy wiring in Coolify.
+is resolved once, not re-assumed every run. If the operator knows an app is
+auto-deployed, they can hand-edit that cache entry to set
+`{"deploy_mode":"auto"}` for the app uuid; the CLI honors the cached entry until
+`--refresh` re-queries the API and returns to `unknown`.
 
 ## Validate-and-fix flow
 
-1. `list` → find the app UUID. `deploy-mode <uuid>` → learn auto vs manual.
+1. `list` → find the app UUID. `deploy-mode <uuid>` → read cached/known mode.
 2. `validate <uuid>` — if it exits non-zero, read the logs it prints.
 3. Diagnose from the logs (missing env var, build failure, wrong branch).
 4. Apply the fix:
@@ -87,8 +90,9 @@ the app's git/auto-deploy wiring in Coolify.
 ## Rules
 
 - Resolve the target app with `list` first; never guess a UUID.
-- Check `deploy-mode` before triggering a deploy on a code change; on `auto`
-  apps a push already deploys — do not call `deploy`.
+- Check `deploy-mode` before triggering a deploy on a code change. Treat
+  `unknown` as manual; only skip `deploy` when the cache explicitly says
+  `auto`.
 - `create-app-public` and `delete-app` are not in the allowlist — confirm with
   the operator before running them. They also confirm in-CLI: without `--yes`,
   `create-app-public` asks y/N and `delete-app` requires typing the app uuid
