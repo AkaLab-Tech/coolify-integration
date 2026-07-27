@@ -186,8 +186,15 @@ cmd_validate() {
   app="$(api GET "/applications/${u}")"
   status="$(printf '%s' "$app" | jq -r '.status // "unknown"')"
   printf '%s' "$app" | jq '{uuid, name, status, fqdn}'
+  # Coolify v4 reports status as "<state>:<health>" (e.g. "running:healthy",
+  # "running:unhealthy"). A bare glob like *healthy* also matches the
+  # substring inside "unhealthy", so it must NOT be used here. Apps without a
+  # healthcheck configured report a bare "running" (no ":<health>" suffix);
+  # treat that as healthy too, since "running" is the only signal available
+  # for them and validate must still succeed for apps that never opted into
+  # healthchecks.
   case "$status" in
-    *running*|*healthy*) log "application is ${status}"; return 0 ;;
+    running|running:healthy) log "application is ${status}"; return 0 ;;
     *) log "application not healthy (status: ${status}); recent logs:"; cmd_logs "$u" 100; return 2 ;;
   esac
 }
