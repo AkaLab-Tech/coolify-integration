@@ -8,7 +8,7 @@ deploying with Coolify.
 
 ## Stack
 
-- **Language**: Bash (single-file CLI — `scripts/atelier-coolify`, v0.4.1)
+- **Language**: Bash (single-file CLI — `scripts/atelier-coolify`, v0.4.2)
 - **Framework**: None — plain shell + `curl` + optional `jq`
 - **Package manager**: None (no build step; `atelier-coolify link` installs a self-resolving launcher onto PATH)
 - **Test runner**: TBD — no test files found
