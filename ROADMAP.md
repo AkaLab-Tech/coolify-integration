@@ -10,4 +10,6 @@ Format per item: `- [ ] <type> <title> [#id] [~estimate] [blocked_by:...]` (PLAN
 
 ## 🎯 P1 — Next
 
+- [ ] `fix` atelier-coolify deploy uses GET on /deploy; Coolify now requires POST (HTTP 405) `#18` `~1h`
+
 ## 💭 P2 — Backlog
